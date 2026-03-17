@@ -10,12 +10,11 @@ import os
 from PIL import Image
 
 # ==========================================
-# 1. 核心設定 (已鎖定您的 Sheet ID)
+# 1. 核心設定 (絕對乾淨，不含任何 API Key)
 # ==========================================
 MY_SHEET_ID = "1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs"
-DEFAULT_API_KEY = "AIzaSyB9trwKZyd1xNFJejlNs4gOxi8dcolI6Xw"
 
-# 強化版的 System Prompt：強調圖表、清晰度與重點突顯
+# 強化版的 System Prompt
 SYSTEM_PROMPT = """你現在是『尚禮坊 (Give Gift Boutique)』的首席廣告顧問。
 你具備分析廣告數據、策劃行銷活動與審核素材的專業能力。
 【重點排版要求】：
@@ -64,6 +63,8 @@ def process_data(file):
 st.set_page_config(page_title="GGB Ads Consultant", page_icon="💐", layout="wide")
 st.sidebar.title("💐 專案管理中心")
 
+api_key = None
+
 try:
     creds = get_creds()
     gc = gspread.authorize(creds)
@@ -82,18 +83,27 @@ try:
     ws_c = get_ws("ChatHistory", ["PID", "Role", "Content", "Time", "Remark"])
     ws_set = get_ws("Settings", ["Key", "Value"])
 
-    # 確保 ChatHistory 有 Remark 欄位 (舊表升級)
+    # 確保 ChatHistory 有 Remark 欄位
     headers = ws_c.row_values(1)
     if len(headers) < 5 or headers[4] != 'Remark':
         ws_c.update_cell(1, 5, "Remark")
 
-    # 自動讀取或寫入 API Key
+    # ==========================================
+    # 🔐 真正的安全金鑰讀取邏輯
+    # ==========================================
     set_data = ws_set.get_all_records()
-    api_key = next((r['Value'] for r in set_data if r['Key'] == 'API_KEY'), None)
-    if not api_key:
-        ws_set.insert_row(["API_KEY", DEFAULT_API_KEY], 2)
-        api_key = DEFAULT_API_KEY
-    st.sidebar.info("🔑 API Key 已自動從雲端載入")
+    api_key_row = next((r for r in set_data if r['Key'] == 'API_KEY'), None)
+
+    if api_key_row and api_key_row['Value']:
+        api_key = str(api_key_row['Value']).strip()
+        st.sidebar.info("🔑 API Key 已從 Google Sheet 安全載入")
+    else:
+        st.sidebar.warning("⚠️ 尚未設定 API Key")
+        new_key = st.sidebar.text_input("輸入全新的 API Key (將加密存入 Sheet):", type="password")
+        if st.sidebar.button("💾 儲存金鑰至雲端") and new_key:
+            ws_set.insert_row(["API_KEY", new_key], 2)
+            st.toast("✅ 金鑰已安全存入 Google Sheet！")
+            st.rerun()
 
     # 專案列表
     projs = ws_p.get_all_records()
@@ -110,7 +120,7 @@ try:
             ws_p.insert_row([str(int(datetime.now().timestamp())), new_n, datetime.now().strftime("%Y-%m-%d")], 2)
             st.rerun()
             
-    # 【新增功能】：刪除當前項目
+    # 刪除當前項目
     if curr_p:
         with st.sidebar.expander("⚙️ 項目設定 (危險區)"):
             if st.button("🗑️ 刪除當前項目", type="primary"):
@@ -121,7 +131,7 @@ try:
 
 except Exception as e:
     st.sidebar.error(f"🔴 連線失敗: {e}")
-    curr_p = None; api_key = None
+    curr_p = None
 
 model_v = st.sidebar.selectbox("🧠 模型:", ["gemini-2.5-flash", "gemini-2.5-pro"])
 
@@ -155,7 +165,7 @@ if curr_p:
 
     st.divider()
 
-    # --- 🤖 快捷優化指令 (包含新增的廣告生成與總結) ---
+    # --- 🤖 快捷優化指令 ---
     st.subheader("🤖 AI 快捷指令")
     if "btn_query" not in st.session_state: st.session_state.btn_query = None
     
@@ -167,64 +177,62 @@ if curr_p:
 
     st.divider()
 
-    # --- 讀取對話紀錄並加上「備註(Remark)」功能 ---
-    all_chat = ws_c.get_all_records()
-    p_chat_with_idx = []
-    
-    # 標記每筆資料在 Google Sheet 中的真實列數 (Row Index)
-    for orig_idx, m in enumerate(all_chat):
-        if str(m['PID']) == str(curr_p['ID']):
-            m['sheet_row'] = orig_idx + 2  # 第一列是 Header
-            p_chat_with_idx.append(m)
+    # --- 讀取對話紀錄並加上備註 ---
+    if h_sheets_ok := True: # 確保有連線
+        all_chat = ws_c.get_all_records()
+        p_chat_with_idx = []
+        
+        for orig_idx, m in enumerate(all_chat):
+            if str(m['PID']) == str(curr_p['ID']):
+                m['sheet_row'] = orig_idx + 2
+                p_chat_with_idx.append(m)
 
-    # 以時間順序顯示 (由舊到新排列)
-    for m in reversed(p_chat_with_idx):
-        with st.chat_message(m['Role'].lower()):
-            st.markdown(m['Content'])
-            
-            # 如果已有備註，顯示出來
-            if m.get('Remark', ''):
-                st.info(f"📌 **您的備註:** {m['Remark']}")
-            
-            # 讓使用者可以在 AI 的回覆下留備註
-            if m['Role'] == 'Assistant':
-                with st.expander("📝 編輯/新增備註"):
-                    new_rmk = st.text_input("輸入備註內容並按 Enter 儲存", value=m.get('Remark', ''), key=f"rmk_{m['sheet_row']}")
-                    if new_rmk != m.get('Remark', ''):
-                        ws_c.update_cell(m['sheet_row'], 5, new_rmk)
-                        st.toast("✅ 備註已儲存至雲端！")
-                        st.rerun()
+        for m in reversed(p_chat_with_idx):
+            with st.chat_message(m['Role'].lower()):
+                st.markdown(m['Content'])
+                if m.get('Remark', ''):
+                    st.info(f"📌 **您的備註:** {m['Remark']}")
+                
+                if m['Role'] == 'Assistant':
+                    with st.expander("📝 編輯/新增備註"):
+                        new_rmk = st.text_input("輸入備註內容並按 Enter 儲存", value=m.get('Remark', ''), key=f"rmk_{m['sheet_row']}")
+                        if new_rmk != m.get('Remark', ''):
+                            ws_c.update_cell(m['sheet_row'], 5, new_rmk)
+                            st.toast("✅ 備註已儲存至雲端！")
+                            st.rerun()
 
     # --- 處理輸入與 AI 生成 ---
     u_input = st.chat_input("詢問您的 AI 顧問...")
     final_q = st.session_state.btn_query if st.session_state.btn_query else u_input
 
-    if final_q and api_key:
-        with st.chat_message("user"): st.markdown(final_q)
-        # 存入雲端，備註欄位留空
-        ws_c.insert_row([str(curr_p['ID']), "User", final_q, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ""], 2)
-        
-        with st.chat_message("assistant"):
-            try:
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(model_v, system_instruction=SYSTEM_PROMPT)
-                
-                content_payload = [f"專案:{curr_p['Name']}\n{file_ctx}\n問題:{final_q}"]
-                if "active_img" in st.session_state and ("圖片" in final_q or "素材" in final_q or "審核" in final_q):
-                    content_payload.append(st.session_state.active_img)
-                
-                res = model.generate_content(content_payload, stream=True)
-                full_text = ""
-                ph = st.empty()
-                for chunk in res:
-                    full_text += chunk.text
-                    ph.markdown(full_text + "▌")
-                ph.markdown(full_text)
-                
-                ws_c.insert_row([str(curr_p['ID']), "Assistant", full_text, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ""], 2)
-                st.session_state.btn_query = None
-                st.rerun()
-            except Exception as e:
-                st.error(f"AI 生成出錯: {e}")
+    if final_q:
+        if not api_key:
+            st.error("⚠️ 請先在左側欄位設定並儲存您的 API Key。")
+        else:
+            with st.chat_message("user"): st.markdown(final_q)
+            ws_c.insert_row([str(curr_p['ID']), "User", final_q, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ""], 2)
+            
+            with st.chat_message("assistant"):
+                try:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(model_v, system_instruction=SYSTEM_PROMPT)
+                    
+                    content_payload = [f"專案:{curr_p['Name']}\n{file_ctx}\n問題:{final_q}"]
+                    if "active_img" in st.session_state and ("圖片" in final_q or "素材" in final_q or "審核" in final_q):
+                        content_payload.append(st.session_state.active_img)
+                    
+                    res = model.generate_content(content_payload, stream=True)
+                    full_text = ""
+                    ph = st.empty()
+                    for chunk in res:
+                        full_text += chunk.text
+                        ph.markdown(full_text + "▌")
+                    ph.markdown(full_text)
+                    
+                    ws_c.insert_row([str(curr_p['ID']), "Assistant", full_text, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ""], 2)
+                    st.session_state.btn_query = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"AI 生成出錯 (請確認 API Key 是否正確): {e}")
 else:
     st.info("請在左側建立項目開始。")
