@@ -21,35 +21,32 @@ def init_google_services():
         'https://www.googleapis.com/auth/drive'
     ]
     creds = Credentials.from_service_account_info(info, scopes=scope)
-    
-    # 初始化 Sheets 和 Drive 客戶端
     gs_client = gspread.authorize(creds)
     drive_service = build('drive', 'v3', credentials=creds)
     return gs_client, drive_service
 
 try:
     gc, drive_service = init_google_services()
-    # 這裡請填入您「共用」給服務帳戶的試算表名稱
-    # 建議先手動建立一個名為 "GGB_Ads_Memory" 的試算表並共用權限
-    SHEET_NAME = "GGB_Ads_Memory" 
-    # 將下面這串網址換成您瀏覽器上方真正的 Google 表格網址
-sh = gc.open_by_url("https://docs.google.com/spreadsheets/d/1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs/edit?gid=0#gid=0")
     
-    # 確保工作表存在
-    try:
-        ws_projects = sh.worksheet("Projects")
-    except:
-        ws_projects = sh.add_worksheet(title="Projects", rows="100", cols="5")
-        ws_projects.append_row(["ID", "Name", "Drive_File_ID", "Created_At"])
-        
-    try:
-        ws_chat = sh.worksheet("ChatHistory")
-    except:
-        ws_chat = sh.add_worksheet(title="ChatHistory", rows="1000", cols="5")
-        ws_chat.append_row(["Project_ID", "Role", "Content", "Timestamp"])
+    # 💡 關鍵修正：請在此處填入您剛剛複製的長串 ID
+    SHEET_ID = "1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs" 
+    sh = gc.open_by_key(SHEET_ID)
+    
+    # 確保工作表存在 (如果沒有，自動建立)
+    def get_or_create_worksheet(title, headers):
+        try:
+            return sh.worksheet(title)
+        except:
+            ws = sh.add_worksheet(title=title, rows="1000", cols=str(len(headers)))
+            ws.append_row(headers)
+            return ws
+
+    ws_projects = get_or_create_worksheet("Projects", ["ID", "Name", "Drive_File_ID", "Created_At"])
+    ws_chat = get_or_create_worksheet("ChatHistory", ["Project_ID", "Role", "Content", "Timestamp"])
 
 except Exception as e:
-    st.error(f"Google 雲端連接失敗，請確保試算表已共用權限給服務帳戶 Email。錯誤: {e}")
+    # 這裡會顯示具體的錯誤，讓我們知道到底發生什麼事
+    st.error(f"❌ 連接失敗！錯誤原因：{e}")
 
 # ==========================================
 # 1. 核心操作函數
