@@ -107,17 +107,6 @@ model_v = st.sidebar.selectbox("🧠 模型版本:", ["gemini-2.5-flash", "gemin
 # ==========================================
 if curr_p:
     st.title(f"📈 項目：{curr_p['Name']}")
-    
-    with st.expander("📎 上傳分析文件", expanded=False):
-        up_f = st.file_uploader("支援 CSV, XLSX, PDF, Image", type=['csv', 'xlsx', 'pdf', 'jpg', 'png'])
-        file_ctx = ""
-        if up_f:
-            if up_f.name.lower().endswith(('.csv', '.xlsx')):
-                df = pd.read_csv(up_f) if up_f.name.endswith('.csv') else pd.read_excel(up_f)
-                file_ctx = f"文件數據摘要: {df.head(5).to_string()}\n"
-            elif up_f.name.lower().endswith(('.jpg', '.png', '.jpeg')):
-                img = Image.open(up_f); st.image(img, width=300)
-                st.session_state.active_img = img; file_ctx = "【使用者上傳了圖片素材】"
 
     st.subheader("🤖 AI 快捷指令")
     if "btn_q" not in st.session_state: st.session_state.btn_q = None
@@ -144,9 +133,28 @@ if curr_p:
                 new_rmk = st.text_input("📝 編輯備註", value=m.get('Remark',''), key=f"r_{m['real_row']}")
                 if new_rmk != m.get('Remark',''):
                     ws_c.update_cell(m['real_row'], 5, new_rmk); st.rerun()
+                    
+    st.divider()
 
+    # ==========================================
+    # 📌 將上傳功能移至輸入框正上方，配合文字詢問
+    # ==========================================
+    up_f = st.file_uploader("📎 附加檔案以配合文字詢問 (支援 CSV, XLSX, PDF, Image)", type=['csv', 'xlsx', 'pdf', 'jpg', 'png'])
+    file_ctx = ""
+    if up_f:
+        if up_f.name.lower().endswith(('.csv', '.xlsx')):
+            df = pd.read_csv(up_f) if up_f.name.endswith('.csv') else pd.read_excel(up_f)
+            file_ctx = f"文件數據摘要: {df.head(5).to_string()}\n"
+        elif up_f.name.lower().endswith(('.jpg', '.png', '.jpeg')):
+            img = Image.open(up_f); st.image(img, width=300)
+            st.session_state.active_img = img; file_ctx = "【使用者上傳了圖片素材】"
+    else:
+        # 當無檔案時，清除暫存避免影響其他對話
+        if "active_img" in st.session_state: del st.session_state.active_img
+
+    # 輸入方格
     u_input = st.chat_input("詢問顧問...")
-    final_q = st.session_state.btn_query if hasattr(st.session_state, 'btn_query') and st.session_state.btn_query else u_input
+    final_q = st.session_state.btn_q if hasattr(st.session_state, 'btn_q') and st.session_state.btn_q else u_input
 
     if final_q and api_key:
         with st.chat_message("user"): st.markdown(final_q)
@@ -160,7 +168,7 @@ if curr_p:
                 res = model.generate_content(payload)
                 st.markdown(res.text)
                 ws_c.insert_row([str(curr_p['ID']), "Assistant", res.text, datetime.now().strftime("%H:%M"), ""], 2)
-                st.session_state.btn_query = None; st.rerun()
+                st.session_state.btn_q = None; st.rerun()
             except Exception as e: st.error(f"生成失敗: {e}")
 else:
     st.info("請在左側建立項目開始。")
