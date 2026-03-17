@@ -327,7 +327,11 @@ if curr_p:
 
     if final_q and api_key:
         with st.chat_message("user"): st.markdown(final_q)
-        ws_c.insert_row([str(curr_p['ID']), "User", final_q, datetime.now().strftime("%H:%M"), ""], 2)
+        
+        # 🛡️ 寫入保護：限制 User 輸入最多 49000 字，避免撐爆 Google Sheet
+        safe_q = final_q[:49000]
+        ws_c.insert_row([str(curr_p['ID']), "User", safe_q, datetime.now().strftime("%H:%M"), ""], 2)
+        
         with st.chat_message("assistant"):
             try:
                 genai.configure(api_key=api_key)
@@ -342,8 +346,12 @@ if curr_p:
                     full_text += chunk.text; ph.markdown(full_text + "▌")
                 ph.markdown(full_text)
                 
-                ws_c.insert_row([str(curr_p['ID']), "Assistant", full_text, datetime.now().strftime("%H:%M"), ""], 2)
+                # 🛡️ 寫入保護：限制 AI 輸出最多 49000 字，避免撐爆 Google Sheet
+                safe_text = full_text[:49000]
+                ws_c.insert_row([str(curr_p['ID']), "Assistant", safe_text, datetime.now().strftime("%H:%M"), ""], 2)
+                
                 st.session_state.btn_q = None; st.rerun()
-            except Exception as e: st.error(f"生成失敗: {e}")
+            except Exception as e: 
+                st.error(f"生成失敗: {e}")
 else:
     st.info("👈 請於左側建立或選擇專案以開啟分析儀表板。")
