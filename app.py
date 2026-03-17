@@ -33,7 +33,7 @@ init_db()
 # ==========================================
 # 1. 基礎設定與系統人設
 # ==========================================
-st.set_page_config(page_title="Give Gift Boutique Ads,Moon", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Give Gift Boutique Ads, Moon", page_icon="📊", layout="wide")
 
 SYSTEM_PROMPT = """
 你現在是『尚禮坊 (Give Gift Boutique)』的首席 Google Ads 數據分析師。
@@ -47,7 +47,7 @@ SYSTEM_PROMPT = """
 # ==========================================
 # 2. 側邊欄：API 設定與模型切換
 # ==========================================
-st.sidebar.title("💐 Give Gift Boutique Ads,Moon")
+st.sidebar.title("💐 Give Gift Boutique Ads, Moon")
 api_key = st.sidebar.text_input("🔑 請輸入 Gemini API Key:", type="password")
 
 selected_model = st.sidebar.selectbox(
@@ -67,35 +67,31 @@ page = st.sidebar.radio("切換工作區：", ["📈 廣告健康診斷看板 (D
 
 # 輔助函數：嘗試從資料中抓取 KPI
 def extract_kpi(df):
-    # 預設值
     kpi = {"cost": 0.0, "clicks": 0, "conversions": 0}
     
-    # 清洗函數：處理貨幣符號、百分比、逗號
     def clean_num(val):
-        if pd.isna(val): return 0.0
-        # 移除常見干擾字元
+        if pd.isna(val) or val == '--': return 0.0
         s = str(val).replace('$', '').replace(',', '').replace('%', '').strip()
         try:
             return float(s)
         except:
             return 0.0
 
-    # 1. 先排除報表底部的「總計」行，避免重複計算或格式干擾
-    # 通常 Google Ads 報表第一欄如果包含 "總計" 或 "Total" 字眼，該行就不要參與加總
-    df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False)]
+    # 排除報表底部的總計行
+    df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False)].copy()
 
     for col in df_clean.columns:
-        c_lower = col.lower().strip()
+        c_lower = str(col).lower().strip()
         
-        # 2. 匹配【總費用】: 必須包含'費用'或'cost'，且排除'平均'、'每'、'cpc'等單位指標
+        # 匹配總費用 (排除平均、每單位等指標)
         if ('費用' in c_lower or 'cost' in c_lower) and not any(ex in c_lower for ex in ['平均', '每', 'avg', 'cpc', 'cpm', '率']):
             kpi['cost'] = df_clean[col].apply(clean_num).sum()
             
-        # 3. 匹配【點擊數】: 排除點擊率
+        # 匹配點擊數
         elif ('點擊' in c_lower or 'clicks' in c_lower) and '率' not in c_lower:
             kpi['clicks'] = int(df_clean[col].apply(clean_num).sum())
             
-        # 4. 匹配【轉換數】: 排除轉換價值、轉換率、每次轉換費用
+        # 匹配轉換數
         elif '轉換' in c_lower and not any(ex in c_lower for ex in ['價值', '率', '費用', 'value', 'rate', 'cost']):
             kpi['conversions'] = int(df_clean[col].apply(clean_num).sum())
 
@@ -112,10 +108,22 @@ if page == "📈 廣告健康診斷看板 (Dashboard)":
     
     if uploaded_file is not None:
         try:
+            # --- 強化版檔案讀取邏輯 ---
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file, skiprows=2)
             else:
-                df = pd.read_excel(uploaded_file)
+                # Excel 自動尋找標題行
+                test_df = pd.read_excel(uploaded_file, nrows=15, header=None)
+                header_row = 0
+                for i, row in test_df.iterrows():
+                    row_str = "".join(str(x) for x in row.values)
+                    if any(key in row_str for key in ["廣告活動", "費用", "點擊", "Clicks", "Cost"]):
+                        header_row = i
+                        break
+                df = pd.read_excel(uploaded_file, header=header_row)
+            
+            # 清理欄位標題
+            df.columns = [str(c).replace('\n', '').strip() for c in df.columns]
             
             st.success("✅ 數據載入成功！")
             
@@ -131,7 +139,6 @@ if page == "📈 廣告健康診斷看板 (Dashboard)":
             with col3:
                 st.metric("總轉換 (Conversions)", f"{kpi_data['conversions']:,.0f} 筆")
             with col4:
-                # 避免除以 0 錯誤
                 cpa = kpi_data['cost'] / kpi_data['conversions'] if kpi_data['conversions'] > 0 else 0
                 st.metric("每次轉換成本 (CPA)", f"${cpa:,.2f}")
                 
@@ -140,24 +147,22 @@ if page == "📈 廣告健康診斷看板 (Dashboard)":
                 
             st.divider()
             
-            # --- 功能 3: 快捷行動按鈕 (一鍵分析) ---
+            # --- 功能 3: 快捷行動按鈕 ---
             st.subheader("🤖 AI 智能分析快捷鍵")
-            st.write("請選擇您想執行的分析任務：")
-            
             action_col1, action_col2, action_col3 = st.columns(3)
             selected_action = None
             
             if action_col1.button("🚨 抓出吃預算怪獸 (浪費錢清單)"):
-                selected_action = "請幫我分析這份數據，找出『花費高但轉換次數極低（或為0）』的關鍵字或廣告活動，並告訴我該如何處理。"
+                selected_action = "請分析數據，找出花費高但轉換極低的項目，並給予停用建議。"
             if action_col2.button("🚀 提高轉換率策略"):
-                selected_action = "請幫我分析這份數據的『點擊率』與『轉換率』，並給出 3 個能立刻提升轉換率的具體優化建議。"
+                selected_action = "分析點擊率與轉換率，給予 3 個具體提升轉換的行動方案。"
             if action_col3.button("📝 產生老闆/會議週報"):
-                selected_action = "請將這份數據總結成一份給老闆看的高階報告。包含：整體表現評分、亮點、最致命的缺點、以及下週的優化預算分配建議。"
+                selected_action = "總結整體表現評分、亮點、缺點及下週預算建議。"
 
             if selected_action and api_key:
-                with st.spinner("AI 首席優化師正在深度運算中..."):
+                with st.spinner("AI 分析中..."):
                     try:
-                        contents = [selected_action, f"數據資料：\n{df.head(30).to_string()}"]
+                        contents = [selected_action, f"數據摘要：\n{df.head(50).to_string()}"]
                         response = model.generate_content(contents, stream=True)
                         
                         st.subheader("💡 分析結果")
@@ -168,79 +173,43 @@ if page == "📈 廣告健康診斷看板 (Dashboard)":
                             message_placeholder.markdown(full_response + "▌")
                         message_placeholder.markdown(full_response)
                         
-                        # --- 功能 4: 報告匯出功能 ---
                         st.download_button(
-                            label="📥 下載此分析報告 (TXT)",
+                            label="📥 下載報告 (TXT)",
                             data=full_response,
-                            file_name=f"Google_Ads_Report_{datetime.now().strftime('%Y%m%d')}.txt",
-                            mime="text/plain"
+                            file_name=f"Ads_Report_{datetime.now().strftime('%m%d')}.txt"
                         )
-                        
                     except Exception as e:
-                        st.error(f"發生錯誤：{e} (提示：若為 429 錯誤請切換至 Flash 模型)")
+                        st.error(f"分析失敗：{e}")
                         
         except Exception as e:
-            st.warning("檔案讀取發生格式異常，但您可以直接使用對話框發問。")
+            st.error(f"檔案解析失敗：{e}")
 
     st.divider()
-    st.write("💬 手動對話區 (如果您有特定問題)：")
-    user_query = st.chat_input("請輸入您自訂的問題...")
+    st.write("💬 手動詢問：")
+    user_query = st.chat_input("對這份數據還有什麼疑問？")
     if user_query and api_key:
-        st.info(f"您的提問：{user_query} (此處功能保留供臨時查詢使用)")
+        st.info(f"提問：{user_query}")
 
 # ==========================================
-# 4. 頁面二：A/B 測試文案生成器 (專業版)
+# 4. 頁面二：A/B 測試文案生成器
 # ==========================================
 elif page == "💡 A/B 測試文案生成器":
-    st.title("💡 A/B 測試廣告文案生成器")
-    st.write("專業的優化必須經過測試。輸入活動資訊，AI 將自動為您產出兩組不同心理學訴求的廣告對照組。")
-    
+    st.title("💡 A/B 測試文案生成器")
     with st.form("ab_test_form"):
         col1, col2 = st.columns(2)
         with col1:
-            campaign_name = st.text_input("🎯 活動名稱", placeholder="例如：尚禮坊中秋頂級果籃")
-            target_audience = st.text_input("👥 目標受眾", placeholder="例如：需要送禮給大客戶的企業秘書")
+            campaign_name = st.text_input("🎯 活動名稱")
+            target_audience = st.text_input("👥 目標受眾")
         with col2:
-            core_message = st.text_input("✨ 核心賣點", placeholder="例如：法國進口水果、精美皮盒包裝、專車直送")
-            call_to_action = st.text_input("📣 行動號召 (CTA)", placeholder="例如：立即預訂享早鳥 85 折")
-            
-        submitted = st.form_submit_button("🚀 生成 A/B 測試企劃")
+            core_message = st.text_input("✨ 核心賣點")
+            call_to_action = st.text_input("📣 行動號召")
+        submitted = st.form_submit_button("🚀 生成方案")
 
-    if submitted:
-        if not api_key:
-            st.error("請先輸入 API Key！")
-        else:
-            prompt = f"""
-            你現在是尚禮坊的高級廣告文案指導。請根據以下資訊，幫我產出一個 Google 搜尋廣告的 A/B 測試方案：
-            活動：{campaign_name}
-            受眾：{target_audience}
-            賣點：{core_message}
-            行動號召：{call_to_action}
-            
-            請產出：
-            1. 【版本 A：理性/規格訴求】：強調產品優勢、折扣、性價比、速度。
-               - 包含 3 個標題 (不多於30字元)
-               - 包含 2 個說明 (不多於90字元)
-            2. 【版本 B：感性/痛點訴求】：強調送禮的面子、尊榮感、解決對方的煩惱。
-               - 包含 3 個標題 (不多於30字元)
-               - 包含 2 個說明 (不多於90字元)
-            3. 【A/B 測試建議】：告訴我這次測試的重點觀察指標 (例如點擊率還是轉化率？)
-            
-            請用專業的 Markdown 格式排版。
-            """
-            
-            with st.spinner("正在為您撰寫極具說服力的 A/B 測試方案..."):
-                try:
-                    response = model.generate_content(prompt)
-                    st.success("✅ A/B 測試方案已生成！")
-                    st.markdown(response.text)
-                    
-                    # 匯出 A/B 測試企劃
-                    st.download_button(
-                        label="📥 下載 A/B 測試企劃 (TXT)",
-                        data=response.text,
-                        file_name=f"AB_Test_Plan_{campaign_name}.txt",
-                        mime="text/plain"
-                    )
-                except Exception as e:
-                    st.error(f"發生錯誤：{e}")
+    if submitted and api_key:
+        prompt = f"針對{campaign_name}，受眾為{target_audience}，賣點{core_message}，請生成 A/B 測試方案（理性 vs 感性）。"
+        with st.spinner("撰寫中..."):
+            try:
+                response = model.generate_content(prompt)
+                st.markdown(response.text)
+            except Exception as e:
+                st.error(f"錯誤：{e}")
