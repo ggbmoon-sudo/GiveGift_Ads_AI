@@ -32,38 +32,59 @@ def get_creds():
     return Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'])
 
 # ==========================================
-# 3. 進階數據解析引擎 (支援 10 大功能)
+# 3. 進階數據解析引擎 (★ 本次修復核心：智能跳行與精準清洗)
 # ==========================================
 def parse_ad_data(file):
     try:
-        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-        df.columns = [str(c).replace('\n', '').strip() for c in df.columns]
+        # 讀取時不預設第一行為標題，以應付 Google Ads 前幾行的 Metadata
+        if file.name.endswith('.csv'):
+            df = pd.read_csv(file, header=None, on_bad_lines='skip')
+        else:
+            df = pd.read_excel(file, header=None)
         
-        def clean(v):
-            s = str(v).replace('$', '').replace(',', '').replace('%', '').strip()
-            return float(s) if s not in ['--', '', 'nan'] else 0.0
+        # 智能尋找真正的標題列 (Header Row)
+        header_idx = 0
+        for i in range(min(15, len(df))):
+            row_vals = df.iloc[i].astype(str).str.lower().tolist()
+            # 如果該行同時包含「費用」與「點擊」等關鍵字，即判定為真實標題
+            if any('費用' in v or 'cost' in v for v in row_vals) and any('點擊' in v or 'clicks' in v for v in row_vals):
+                header_idx = i
+                break
+        
+        # 重新設定正確的標題列並刪除前面的 metadata
+        df.columns = [str(c).replace('\n', '').strip() for c in df.iloc[header_idx]]
+        df = df.iloc[header_idx+1:].reset_index(drop=True)
+        
+        # 清理底部的「總計」列
+        df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False, case=False)].copy()
+        
+        def clean_num(v):
+            if pd.isna(v): return 0.0
+            # 強制清洗掉所有可能的貨幣與百分比符號
+            s = str(v).replace('$', '').replace('HK', '').replace(',', '').replace('%', '').replace('<', '').replace('>', '').strip()
+            try: return float(s)
+            except: return 0.0
             
-        df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False)].copy()
-        
-        # 自動識別欄位
         metrics = {'cost': 0.0, 'clicks': 0, 'convs': 0, 'impressions': 0, 'revenue': 0.0}
         col_map = {'name': df_clean.columns[0], 'cost': None, 'clicks': None, 'convs': None, 'impr': None}
         
+        # 智能匹配欄位名稱 (精準排除相似詞彙)
         for col in df_clean.columns:
             c = col.lower()
-            if ('費用' in c or 'cost' in c) and '平均' not in c: 
-                col_map['cost'] = col; metrics['cost'] = df_clean[col].apply(clean).sum()
-            elif '點擊' in c and '率' not in c: 
-                col_map['clicks'] = col; metrics['clicks'] = int(df_clean[col].apply(clean).sum())
-            elif '轉換' in c and not any(x in c for x in ['率','費用','價值']): 
-                col_map['convs'] = col; metrics['convs'] = int(df_clean[col].apply(clean).sum())
-            elif '曝光' in c or 'impr' in c:
-                col_map['impr'] = col; metrics['impressions'] = int(df_clean[col].apply(clean).sum())
+            if ('費用' in c or 'cost' in c) and not any(ex in c for ex in ['平均','每','avg','單次','轉換']): 
+                col_map['cost'] = col; metrics['cost'] = df_clean[col].apply(clean_num).sum()
+            elif ('點擊' in c or 'clicks' in c) and '率' not in c and '出價' not in c: 
+                col_map['clicks'] = col; metrics['clicks'] = int(df_clean[col].apply(clean_num).sum())
+            elif ('轉換' in c or 'conv' in c) and not any(x in c for x in ['率','費用','價值','後','單次']): 
+                col_map['convs'] = col; metrics['convs'] = int(df_clean[col].apply(clean_num).sum())
+            elif ('曝光' in c or 'impr' in c) and '率' not in c:
+                col_map['impr'] = col; metrics['impressions'] = int(df_clean[col].apply(clean_num).sum())
             elif '價值' in c or 'revenue' in c or 'value' in c:
-                metrics['revenue'] = df_clean[col].apply(clean).sum()
+                metrics['revenue'] = df_clean[col].apply(clean_num).sum()
 
         return df_clean, metrics, col_map
     except Exception as e:
+        st.error(f"報表解析錯誤: {e}")
         return None, None, None
 
 # ==========================================
@@ -130,36 +151,20 @@ model_v = st.sidebar.selectbox("🧠 驅動引擎 (已鎖定):", ["gemini-2.5-fl
 if curr_p:
     st.title(f"🚀 {curr_p['Name']} - 廣告成效智庫")
     
-    # 📎 全局文件上傳 (驅動整個 Dashboard)
+    # 📎 全局文件上傳狀態
     if "df" not in st.session_state: st.session_state.df = None
     if "metrics" not in st.session_state: st.session_state.metrics = None
     if "col_map" not in st.session_state: st.session_state.col_map = None
-    file_ctx = ""
-
-    with st.container(border=True):
-        up_f = st.file_uploader("📥 載入數據源 (支援 CSV, XLSX) 或 視覺素材 (JPG, PNG)", type=['csv', 'xlsx', 'jpg', 'png'])
-        if up_f:
-            if up_f.name.lower().endswith(('.csv', '.xlsx')):
-                df_clean, metrics, col_map = parse_ad_data(up_f)
-                if df_clean is not None:
-                    st.session_state.df, st.session_state.metrics, st.session_state.col_map = df_clean, metrics, col_map
-                    file_ctx = f"已載入數據，總花費 {metrics['cost']}，轉換數 {metrics['convs']}。"
-                    st.toast("✅ 數據載入成功，儀表板已更新！")
-            elif up_f.name.lower().endswith(('.jpg', '.png')):
-                img = Image.open(up_file); st.session_state.active_img = img
-                file_ctx = "【使用者上傳了圖片素材】"
-                st.image(img, width=150)
 
     # 🗂️ 核心功能板塊 (Tab 佈局)
     t1, t2, t3, t4 = st.tabs(["📊 全局數據大盤", "🕵️ 深度自動診斷", "💰 利潤與匯出", "🤖 AI 首席顧問"])
 
     # ----------------------------------------
-    # Tab 1: 📊 全局數據大盤 (Features 1, 2, 5)
+    # Tab 1: 📊 全局數據大盤
     # ----------------------------------------
     with t1:
         if st.session_state.metrics:
             m = st.session_state.metrics
-            # Feature 1: 視覺化儀表板
             st.subheader("即時成效指標 (KPIs)")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("總花費 (Cost)", f"${m['cost']:,.0f}", "-5% (模擬)")
@@ -171,13 +176,11 @@ if curr_p:
 
             st.divider()
             
-            # Feature 5: 預算消耗進度條
             st.subheader("📅 本月預算消耗進度")
             budget = st.number_input("設定本月總預算 ($)", value=10000, step=1000)
             pacing = min(m['cost'] / budget, 1.0) if budget > 0 else 0
             st.progress(pacing, text=f"目前消耗: ${m['cost']:,.0f} / ${budget:,.0f} ({pacing*100:.1f}%)")
 
-            # Feature 2: 異常警報監控系統
             st.subheader("🚨 系統異常警報")
             if cpa > budget * 0.1:
                 st.error("⚠️ **CPA 過高警報**：目前的轉換成本異常偏高，建議立即暫停表現最差的群組！")
@@ -186,21 +189,21 @@ if curr_p:
             if cpa <= budget * 0.1 and m['convs'] > 0:
                 st.success("✅ 目前帳戶運行健康，無重大異常。")
         else:
-            st.info("請於上方上傳 CSV/XLSX 報表以解鎖數據大盤。")
+            st.info("請於最下方對話框上傳 CSV/XLSX 報表以解鎖數據大盤。")
 
     # ----------------------------------------
-    # Tab 2: 🕵️ 深度自動診斷 (Features 3, 4, 6, 7, 10)
+    # Tab 2: 🕵️ 深度自動診斷
     # ----------------------------------------
     with t2:
         if st.session_state.df is not None:
             df, cmap = st.session_state.df, st.session_state.col_map
             
-            # Feature 3: 無效預算抓漏 (Wasted Spend Finder)
             with st.container(border=True):
                 st.subheader("🩸 吸血蟲抓漏 (高花費、零轉換)")
                 if cmap['cost'] and cmap['convs']:
-                    # 抓取花費大於平均，且轉換為 0 的列
-                    def clean_val(v): return float(str(v).replace('$','').replace(',','').strip()) if str(v) not in ['--','nan',''] else 0
+                    def clean_val(v): 
+                        if pd.isna(v): return 0.0
+                        return float(str(v).replace('HK$','').replace('$','').replace(',','').strip()) if str(v) not in ['--','nan',''] else 0.0
                     df['Temp_Cost'] = df[cmap['cost']].apply(clean_val)
                     df['Temp_Conv'] = df[cmap['convs']].apply(clean_val)
                     wasted_df = df[(df['Temp_Cost'] > 50) & (df['Temp_Conv'] == 0)]
@@ -211,7 +214,6 @@ if curr_p:
                         st.success("🎉 太棒了！目前沒有明顯的預算浪費盲區。")
 
             colA, colB = st.columns(2)
-            # Feature 10: 跨期漏斗分析
             with colA:
                 with st.container(border=True):
                     st.subheader("🔽 流量漏斗分析")
@@ -222,7 +224,6 @@ if curr_p:
                     }).set_index("階段")
                     st.bar_chart(funnel_data)
 
-            # Feature 4: A/B 測試對決
             with colB:
                 with st.container(border=True):
                     st.subheader("⚖️ A/B 測試對決看板")
@@ -233,10 +234,10 @@ if curr_p:
                         st.caption("AI 預判獲勝者：")
                         st.success(f"🏆 **{a}** (由於較佳的點擊率預期)")
         else:
-            st.info("請於上方上傳 CSV/XLSX 報表以解鎖深度診斷。")
+            st.info("請於最下方對話框上傳 CSV/XLSX 報表以解鎖深度診斷。")
 
     # ----------------------------------------
-    # Tab 3: 💰 財務與匯出 (Features 8, 9)
+    # Tab 3: 💰 財務與匯出
     # ----------------------------------------
     with t3:
         st.subheader("💰 真實利潤結算機 (Real Profit)")
@@ -259,16 +260,15 @@ if curr_p:
                 if net_profit < 0:
                     st.error("⚠️ 警告：目前廣告正在虧損，請立即調整策略或暫停廣告！")
 
-        # Feature 9: 一鍵匯出報表
         st.subheader("📑 匯出開會報表")
-        report_text = f"專案：{curr_p['Name']}\n生成時間：{datetime.now().strftime('%Y-%m-%d')}\n---\n目前淨利潤估算：${net_profit:,.0f}\n" if st.session_state.metrics else "請先上傳報表"
+        report_text = f"專案：{curr_p['Name']}\n生成時間：{datetime.now().strftime('%Y-%m-%d')}\n---\n"
+        if st.session_state.metrics: report_text += f"目前淨利潤估算：${net_profit:,.0f}\n"
         st.download_button("📥 下載 TXT 總結報表", data=report_text, file_name=f"{curr_p['Name']}_Report.txt")
 
     # ----------------------------------------
-    # Tab 4: 🤖 AI 顧問對話 (核心記憶與互動)
+    # Tab 4: 🤖 AI 首席顧問與對話區
     # ----------------------------------------
     with t4:
-        # 快捷指令區
         st.subheader("⚡ 顧問快捷指令")
         if "btn_q" not in st.session_state: st.session_state.btn_q = None
         c1, c2, c3, c4 = st.columns(4)
@@ -279,7 +279,6 @@ if curr_p:
 
         st.divider()
 
-        # 對話與備註渲染
         all_chat = ws_c.get_all_records()
         p_chat = []
         for idx, row in enumerate(all_chat):
@@ -295,29 +294,51 @@ if curr_p:
                     if new_rmk != m.get('Remark',''):
                         ws_c.update_cell(m['real_row'], 5, new_rmk); st.rerun()
 
-        # 對話輸入框
-        u_input = st.chat_input("向首席顧問提問，或下達指令...")
-        final_q = st.session_state.btn_q if hasattr(st.session_state, 'btn_q') and st.session_state.btn_q else u_input
+    st.divider()
 
-        if final_q and api_key:
-            with st.chat_message("user"): st.markdown(final_q)
-            ws_c.insert_row([str(curr_p['ID']), "User", final_q, datetime.now().strftime("%H:%M"), ""], 2)
-            with st.chat_message("assistant"):
-                try:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(model_v, system_instruction=SYSTEM_PROMPT)
-                    payload = [f"專案:{curr_p['Name']}\n{file_ctx}\n問題:{final_q}"]
-                    if "active_img" in st.session_state: payload.append(st.session_state.active_img)
-                    
-                    res = model.generate_content(payload, stream=True)
-                    full_text = ""
-                    ph = st.empty()
-                    for chunk in res:
-                        full_text += chunk.text; ph.markdown(full_text + "▌")
-                    ph.markdown(full_text)
-                    
-                    ws_c.insert_row([str(curr_p['ID']), "Assistant", full_text, datetime.now().strftime("%H:%M"), ""], 2)
-                    st.session_state.btn_q = None; st.rerun()
-                except Exception as e: st.error(f"生成失敗: {e}")
+    # ==========================================
+    # 📌 配合文字的獨立文件上傳區 (在輸入框上方)
+    # ==========================================
+    with st.container(border=True):
+        up_f = st.file_uploader("📎 附加檔案以更新大盤或配合文字詢問 (支援 CSV, XLSX, JPG, PNG)", type=['csv', 'xlsx', 'jpg', 'png'])
+        file_ctx = ""
+        if up_f:
+            if up_f.name.lower().endswith(('.csv', '.xlsx')):
+                df_clean, metrics, col_map = parse_ad_data(up_f)
+                if df_clean is not None:
+                    # 更新全局狀態，驅動儀表板
+                    st.session_state.df, st.session_state.metrics, st.session_state.col_map = df_clean, metrics, col_map
+                    file_ctx = f"文件數據摘要: {df_clean.head(5).to_string()}\n"
+                    st.toast("✅ 報表已自動同步至大盤！")
+            elif up_f.name.lower().endswith(('.jpg', '.png', '.jpeg')):
+                img = Image.open(up_f); st.image(img, width=150)
+                st.session_state.active_img = img; file_ctx = "【使用者上傳了圖片素材】"
+        else:
+            if "active_img" in st.session_state: del st.session_state.active_img
+
+    # 輸入方格
+    u_input = st.chat_input("向首席顧問提問，或下達指令...")
+    final_q = st.session_state.btn_q if hasattr(st.session_state, 'btn_q') and st.session_state.btn_q else u_input
+
+    if final_q and api_key:
+        with st.chat_message("user"): st.markdown(final_q)
+        ws_c.insert_row([str(curr_p['ID']), "User", final_q, datetime.now().strftime("%H:%M"), ""], 2)
+        with st.chat_message("assistant"):
+            try:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel(model_v, system_instruction=SYSTEM_PROMPT)
+                payload = [f"專案:{curr_p['Name']}\n{file_ctx}\n問題:{final_q}"]
+                if "active_img" in st.session_state: payload.append(st.session_state.active_img)
+                
+                res = model.generate_content(payload, stream=True)
+                full_text = ""
+                ph = st.empty()
+                for chunk in res:
+                    full_text += chunk.text; ph.markdown(full_text + "▌")
+                ph.markdown(full_text)
+                
+                ws_c.insert_row([str(curr_p['ID']), "Assistant", full_text, datetime.now().strftime("%H:%M"), ""], 2)
+                st.session_state.btn_q = None; st.rerun()
+            except Exception as e: st.error(f"生成失敗: {e}")
 else:
     st.info("👈 請於左側建立或選擇專案以開啟分析儀表板。")
