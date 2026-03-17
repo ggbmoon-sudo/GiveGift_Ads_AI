@@ -9,7 +9,7 @@ import io
 from PIL import Image
 
 # ==========================================
-# 1. 核心設定 (鎖定 GGB 專屬設定)
+# 1. 核心設定
 # ==========================================
 MY_SHEET_ID = "1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs"
 SYSTEM_PROMPT = """你現在是『尚禮坊 (Give Gift Boutique)』的首席廣告顧問。
@@ -32,50 +32,65 @@ def get_creds():
     return Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'])
 
 # ==========================================
-# 3. 進階數據解析引擎 (★ 本次修復核心：智能跳行與精準清洗)
+# 3. 防彈級數據解析引擎 (★ 徹底解決 Google 報表陷阱)
 # ==========================================
 def parse_ad_data(file):
     try:
-        # 讀取時不預設第一行為標題，以應付 Google Ads 前幾行的 Metadata
-        if file.name.endswith('.csv'):
-            df = pd.read_csv(file, header=None, on_bad_lines='skip')
+        if file.name.lower().endswith('.csv'):
+            # 1. 讀取原始檔案內容 (避開 Pandas 第一行推斷陷阱)
+            content = file.getvalue()
+            try:
+                text = content.decode('utf-8')
+            except UnicodeDecodeError:
+                text = content.decode('utf-16') # 支援 Google Ads 的 Excel CSV 格式
+            
+            lines = text.splitlines()
+            
+            # 2. 智能尋標：找出真正的標題行
+            header_idx = 0
+            for i, line in enumerate(lines):
+                # 只要行內同時出現關鍵字，就是真實標題
+                if ('點擊' in line or 'Clicks' in line) and ('費用' in line or 'Cost' in line):
+                    header_idx = i
+                    break
+                    
+            # 3. 從真實標題行開始截斷並解析
+            csv_data = "\n".join(lines[header_idx:])
+            sep = '\t' if '\t' in lines[header_idx] else ','
+            df = pd.read_csv(io.StringIO(csv_data), sep=sep)
         else:
-            df = pd.read_excel(file, header=None)
-        
-        # 智能尋找真正的標題列 (Header Row)
-        header_idx = 0
-        for i in range(min(15, len(df))):
-            row_vals = df.iloc[i].astype(str).str.lower().tolist()
-            # 如果該行同時包含「費用」與「點擊」等關鍵字，即判定為真實標題
-            if any('費用' in v or 'cost' in v for v in row_vals) and any('點擊' in v or 'clicks' in v for v in row_vals):
-                header_idx = i
-                break
-        
-        # 重新設定正確的標題列並刪除前面的 metadata
-        df.columns = [str(c).replace('\n', '').strip() for c in df.iloc[header_idx]]
-        df = df.iloc[header_idx+1:].reset_index(drop=True)
+            df = pd.read_excel(file)
+            # Excel 也做簡單跳行尋標
+            for i in range(min(10, len(df))):
+                row_vals = df.iloc[i].astype(str).str.lower().tolist()
+                if any('費用' in v or 'cost' in v for v in row_vals):
+                    df.columns = [str(c).replace('\n', '').strip() for c in df.iloc[i]]
+                    df = df.iloc[i+1:].reset_index(drop=True)
+                    break
+                    
+        # 標題清理
+        df.columns = [str(c).replace('\n', '').strip() for c in df.columns]
         
         # 清理底部的「總計」列
         df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False, case=False)].copy()
         
         def clean_num(v):
             if pd.isna(v): return 0.0
-            # 強制清洗掉所有可能的貨幣與百分比符號
-            s = str(v).replace('$', '').replace('HK', '').replace(',', '').replace('%', '').replace('<', '').replace('>', '').strip()
+            s = str(v).replace('HK$', '').replace('$', '').replace(',', '').replace('%', '').replace('<', '').replace('>', '').strip()
             try: return float(s)
             except: return 0.0
             
         metrics = {'cost': 0.0, 'clicks': 0, 'convs': 0, 'impressions': 0, 'revenue': 0.0}
         col_map = {'name': df_clean.columns[0], 'cost': None, 'clicks': None, 'convs': None, 'impr': None}
         
-        # 智能匹配欄位名稱 (精準排除相似詞彙)
+        # 精準欄位過濾
         for col in df_clean.columns:
             c = col.lower()
             if ('費用' in c or 'cost' in c) and not any(ex in c for ex in ['平均','每','avg','單次','轉換']): 
                 col_map['cost'] = col; metrics['cost'] = df_clean[col].apply(clean_num).sum()
-            elif ('點擊' in c or 'clicks' in c) and '率' not in c and '出價' not in c: 
+            elif ('點擊' in c or 'clicks' in c) and not any(ex in c for ex in ['率', '出價', '單次']): 
                 col_map['clicks'] = col; metrics['clicks'] = int(df_clean[col].apply(clean_num).sum())
-            elif ('轉換' in c or 'conv' in c) and not any(x in c for x in ['率','費用','價值','後','單次']): 
+            elif ('轉換' in c or 'conv' in c) and not any(x in c for x in ['率','費用','價值','後','單次', '成本']): 
                 col_map['convs'] = col; metrics['convs'] = int(df_clean[col].apply(clean_num).sum())
             elif ('曝光' in c or 'impr' in c) and '率' not in c:
                 col_map['impr'] = col; metrics['impressions'] = int(df_clean[col].apply(clean_num).sum())
@@ -112,7 +127,6 @@ try:
     ws_c = get_ws("ChatHistory", ["PID", "Role", "Content", "Time", "Remark"])
     ws_set = get_ws("Settings", ["Key", "Value"])
 
-    # API 金鑰管理
     set_data = ws_set.get_all_records()
     api_key_row = next((r for r in set_data if r['Key'] == 'API_KEY'), None)
     if api_key_row and api_key_row['Value']:
@@ -122,7 +136,6 @@ try:
         if st.sidebar.button("💾 儲存金鑰") and new_key:
             ws_set.insert_row(["API_KEY", new_key], 2); st.rerun()
 
-    # 專案管理
     projs = ws_p.get_all_records()
     if projs:
         sel_name = st.sidebar.selectbox("📂 選擇分析項目：", [p['Name'] for p in projs])
@@ -151,12 +164,10 @@ model_v = st.sidebar.selectbox("🧠 驅動引擎 (已鎖定):", ["gemini-2.5-fl
 if curr_p:
     st.title(f"🚀 {curr_p['Name']} - 廣告成效智庫")
     
-    # 📎 全局文件上傳狀態
     if "df" not in st.session_state: st.session_state.df = None
     if "metrics" not in st.session_state: st.session_state.metrics = None
     if "col_map" not in st.session_state: st.session_state.col_map = None
 
-    # 🗂️ 核心功能板塊 (Tab 佈局)
     t1, t2, t3, t4 = st.tabs(["📊 全局數據大盤", "🕵️ 深度自動診斷", "💰 利潤與匯出", "🤖 AI 首席顧問"])
 
     # ----------------------------------------
@@ -167,25 +178,23 @@ if curr_p:
             m = st.session_state.metrics
             st.subheader("即時成效指標 (KPIs)")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("總花費 (Cost)", f"${m['cost']:,.0f}", "-5% (模擬)")
-            c2.metric("總點擊 (Clicks)", f"{m['clicks']:,}", "12% (模擬)")
-            c3.metric("總轉換 (Conversions)", f"{m['convs']:,}", "8% (模擬)")
+            c1.metric("總花費 (Cost)", f"${m['cost']:,.0f}")
+            c2.metric("總點擊 (Clicks)", f"{m['clicks']:,}")
+            c3.metric("總轉換 (Conversions)", f"{m['convs']:,}")
             cpa = m['cost'] / m['convs'] if m['convs'] > 0 else 0
-            roas = (m['revenue'] / m['cost'] * 100) if m['cost'] > 0 else 0
             c4.metric("平均 CPA", f"${cpa:,.1f}", "健康" if cpa < 100 else "偏高", delta_color="inverse")
 
             st.divider()
-            
             st.subheader("📅 本月預算消耗進度")
-            budget = st.number_input("設定本月總預算 ($)", value=10000, step=1000)
+            budget = st.number_input("設定本月總預算 ($)", value=250000, step=10000)
             pacing = min(m['cost'] / budget, 1.0) if budget > 0 else 0
             st.progress(pacing, text=f"目前消耗: ${m['cost']:,.0f} / ${budget:,.0f} ({pacing*100:.1f}%)")
 
             st.subheader("🚨 系統異常警報")
             if cpa > budget * 0.1:
-                st.error("⚠️ **CPA 過高警報**：目前的轉換成本異常偏高，建議立即暫停表現最差的群組！")
+                st.error("⚠️ **CPA 過高警報**：轉換成本異常，建議檢查著陸頁或暫停劣質群組！")
             if m['cost'] > 500 and m['convs'] == 0:
-                st.error("🩸 **預算流失警報**：花費已超過 $500 卻產生 0 轉換，請檢查著陸頁 (Landing Page) 是否故障！")
+                st.error("🩸 **預算流失警報**：花費超過 $500 卻 0 轉換，請立即處理！")
             if cpa <= budget * 0.1 and m['convs'] > 0:
                 st.success("✅ 目前帳戶運行健康，無重大異常。")
         else:
@@ -209,7 +218,6 @@ if curr_p:
                     wasted_df = df[(df['Temp_Cost'] > 50) & (df['Temp_Conv'] == 0)]
                     if not wasted_df.empty:
                         st.dataframe(wasted_df[[cmap['name'], cmap['cost'], cmap['clicks']]], use_container_width=True)
-                        st.button("導出為負面清單 (TXT)")
                     else:
                         st.success("🎉 太棒了！目前沒有明顯的預算浪費盲區。")
 
@@ -219,7 +227,7 @@ if curr_p:
                     st.subheader("🔽 流量漏斗分析")
                     m = st.session_state.metrics
                     funnel_data = pd.DataFrame({
-                        "階段": ["1. 曝光 (Impressions)", "2. 點擊 (Clicks)", "3. 轉換 (Conversions)"],
+                        "階段": ["1. 曝光", "2. 點擊", "3. 轉換"],
                         "數量": [max(m['impressions'], m['clicks']*10), m['clicks'], m['convs']]
                     }).set_index("階段")
                     st.bar_chart(funnel_data)
@@ -228,16 +236,17 @@ if curr_p:
                 with st.container(border=True):
                     st.subheader("⚖️ A/B 測試對決看板")
                     items = df[cmap['name']].tolist()
-                    a = st.selectbox("選擇實驗組 A", items, index=0)
-                    b = st.selectbox("選擇對照組 B", items, index=min(1, len(items)-1))
-                    if a and b:
-                        st.caption("AI 預判獲勝者：")
-                        st.success(f"🏆 **{a}** (由於較佳的點擊率預期)")
+                    if len(items) >= 2:
+                        a = st.selectbox("選擇實驗組 A", items, index=0)
+                        b = st.selectbox("選擇對照組 B", items, index=1)
+                        if a and b:
+                            st.caption("AI 預判獲勝者：")
+                            st.success(f"🏆 **{a}** (由於較佳的點擊率預期)")
         else:
             st.info("請於最下方對話框上傳 CSV/XLSX 報表以解鎖深度診斷。")
 
     # ----------------------------------------
-    # Tab 3: 💰 財務與匯出
+    # Tab 3: 💰 利潤與匯出
     # ----------------------------------------
     with t3:
         st.subheader("💰 真實利潤結算機 (Real Profit)")
@@ -256,7 +265,7 @@ if curr_p:
                 net_profit = gross_revenue - product_cost - total_shipping - ad_cost
                 
                 st.divider()
-                st.metric("本期真實淨利潤 (Net Profit)", f"${net_profit:,.0f}", f"ROAS: {(gross_revenue/ad_cost)*100:.0f}%" if ad_cost>0 else "N/A")
+                st.metric("本期真實淨利潤 (Net Profit)", f"${net_profit:,.0f}")
                 if net_profit < 0:
                     st.error("⚠️ 警告：目前廣告正在虧損，請立即調整策略或暫停廣告！")
 
@@ -266,7 +275,7 @@ if curr_p:
         st.download_button("📥 下載 TXT 總結報表", data=report_text, file_name=f"{curr_p['Name']}_Report.txt")
 
     # ----------------------------------------
-    # Tab 4: 🤖 AI 首席顧問與對話區
+    # Tab 4: 🤖 AI 首席顧問
     # ----------------------------------------
     with t4:
         st.subheader("⚡ 顧問快捷指令")
@@ -297,7 +306,7 @@ if curr_p:
     st.divider()
 
     # ==========================================
-    # 📌 配合文字的獨立文件上傳區 (在輸入框上方)
+    # 📌 文件上傳與對話區
     # ==========================================
     with st.container(border=True):
         up_f = st.file_uploader("📎 附加檔案以更新大盤或配合文字詢問 (支援 CSV, XLSX, JPG, PNG)", type=['csv', 'xlsx', 'jpg', 'png'])
@@ -306,7 +315,6 @@ if curr_p:
             if up_f.name.lower().endswith(('.csv', '.xlsx')):
                 df_clean, metrics, col_map = parse_ad_data(up_f)
                 if df_clean is not None:
-                    # 更新全局狀態，驅動儀表板
                     st.session_state.df, st.session_state.metrics, st.session_state.col_map = df_clean, metrics, col_map
                     file_ctx = f"文件數據摘要: {df_clean.head(5).to_string()}\n"
                     st.toast("✅ 報表已自動同步至大盤！")
@@ -316,7 +324,6 @@ if curr_p:
         else:
             if "active_img" in st.session_state: del st.session_state.active_img
 
-    # 輸入方格
     u_input = st.chat_input("向首席顧問提問，或下達指令...")
     final_q = st.session_state.btn_q if hasattr(st.session_state, 'btn_q') and st.session_state.btn_q else u_input
 
