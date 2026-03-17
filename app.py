@@ -12,7 +12,7 @@ import os
 # 1. 核心設定 (請填寫您的試算表 ID)
 # ==========================================
 # 💡 ID 就在網址 https://docs.google.com/spreadsheets/d/ [這一段亂碼] /edit 之中
-MY_SHEET_ID = "在此填入您的長串試算表ID" 
+MY_SHEET_ID = "1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs" 
 
 # ==========================================
 # 2. 系統狀態檢測 (確保不崩潰)
