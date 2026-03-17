@@ -9,7 +9,7 @@ import io
 from PIL import Image
 
 # ==========================================
-# 1. 核心設定
+# 1. 核心設定 (鎖定 GGB 專屬設定)
 # ==========================================
 MY_SHEET_ID = "1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs"
 SYSTEM_PROMPT = """你現在是『尚禮坊 (Give Gift Boutique)』的首席廣告顧問。
@@ -32,35 +32,29 @@ def get_creds():
     return Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'])
 
 # ==========================================
-# 3. 防彈級數據解析引擎 (★ 徹底解決 Google 報表陷阱)
+# 3. 防彈級數據解析引擎 (★ 修正：名稱欄位精準鎖定)
 # ==========================================
 def parse_ad_data(file):
     try:
         if file.name.lower().endswith('.csv'):
-            # 1. 讀取原始檔案內容 (避開 Pandas 第一行推斷陷阱)
             content = file.getvalue()
             try:
                 text = content.decode('utf-8')
             except UnicodeDecodeError:
-                text = content.decode('utf-16') # 支援 Google Ads 的 Excel CSV 格式
+                text = content.decode('utf-16')
             
             lines = text.splitlines()
-            
-            # 2. 智能尋標：找出真正的標題行
             header_idx = 0
             for i, line in enumerate(lines):
-                # 只要行內同時出現關鍵字，就是真實標題
                 if ('點擊' in line or 'Clicks' in line) and ('費用' in line or 'Cost' in line):
                     header_idx = i
                     break
                     
-            # 3. 從真實標題行開始截斷並解析
             csv_data = "\n".join(lines[header_idx:])
             sep = '\t' if '\t' in lines[header_idx] else ','
             df = pd.read_csv(io.StringIO(csv_data), sep=sep)
         else:
             df = pd.read_excel(file)
-            # Excel 也做簡單跳行尋標
             for i in range(min(10, len(df))):
                 row_vals = df.iloc[i].astype(str).str.lower().tolist()
                 if any('費用' in v or 'cost' in v for v in row_vals):
@@ -68,10 +62,7 @@ def parse_ad_data(file):
                     df = df.iloc[i+1:].reset_index(drop=True)
                     break
                     
-        # 標題清理
         df.columns = [str(c).replace('\n', '').strip() for c in df.columns]
-        
-        # 清理底部的「總計」列
         df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False, case=False)].copy()
         
         def clean_num(v):
@@ -83,10 +74,16 @@ def parse_ad_data(file):
         metrics = {'cost': 0.0, 'clicks': 0, 'convs': 0, 'impressions': 0, 'revenue': 0.0}
         col_map = {'name': df_clean.columns[0], 'cost': None, 'clicks': None, 'convs': None, 'impr': None}
         
-        # 精準欄位過濾
+        # ★ 精準欄位過濾：避開狀態與類型
         for col in df_clean.columns:
-            c = col.lower()
-            if ('費用' in c or 'cost' in c) and not any(ex in c for ex in ['平均','每','avg','單次','轉換']): 
+            c = str(col).lower()
+            
+            # 尋找名稱：包含廣告活動，但不包含狀態、類型、策略
+            if any(k in c for k in ['廣告活動', 'campaign', '搜尋字詞', 'search term', '廣告群組', 'ad group']):
+                if not any(ex in c for ex in ['狀態', 'status', '類型', 'type', '出價', '策略']):
+                    col_map['name'] = col
+                    
+            elif ('費用' in c or 'cost' in c) and not any(ex in c for ex in ['平均','每','avg','單次','轉換']): 
                 col_map['cost'] = col; metrics['cost'] = df_clean[col].apply(clean_num).sum()
             elif ('點擊' in c or 'clicks' in c) and not any(ex in c for ex in ['率', '出價', '單次']): 
                 col_map['clicks'] = col; metrics['clicks'] = int(df_clean[col].apply(clean_num).sum())
@@ -235,7 +232,8 @@ if curr_p:
             with colB:
                 with st.container(border=True):
                     st.subheader("⚖️ A/B 測試對決看板")
-                    items = df[cmap['name']].tolist()
+                    # ★ 修正：過濾空值並移除重複的名稱，讓選單更乾淨
+                    items = df[cmap['name']].dropna().astype(str).unique().tolist()
                     if len(items) >= 2:
                         a = st.selectbox("選擇實驗組 A", items, index=0)
                         b = st.selectbox("選擇對照組 B", items, index=1)
