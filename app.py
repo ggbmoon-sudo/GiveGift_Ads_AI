@@ -180,18 +180,29 @@ if curr_pid:
         save_chat(curr_pid, "user", query)
         
         with st.chat_message("assistant"):
-            ctx = f"專案：{sel_name}\n"
-            if data_res: ctx += f"數據摘要：\n{data_res['df'].head(40).to_string()}\n"
-            ctx += f"指令：{query}"
-            
-            res = model.generate_content(ctx, stream=True)
-            full = ""
-            ph = st.empty()
-            for chunk in res:
-                full += chunk.text
-                ph.markdown(full + "▌")
-            ph.markdown(full)
-            save_chat(curr_pid, "assistant", full)
+                        ctx = f"專案：{sel_name}\n"
+                        if data_res: ctx += f"報表數據摘要：\n{data_res['df'].head(40).to_string()}\n"
+                        ctx += f"指令：{query}"
+                        
+                        res = model.generate_content(ctx, stream=True)
+                        full = ""
+                        ph = st.empty()
+                        
+                        try:
+                            for chunk in res:
+                                # --- 核心修復：檢查 chunk 是否包含有效文字 ---
+                                if chunk.candidates and chunk.candidates[0].content.parts:
+                                    chunk_text = chunk.text
+                                    full += chunk_text
+                                    ph.markdown(full + "▌")
+                                else:
+                                    # 如果內容被屏蔽，顯示提示而非崩潰
+                                    st.warning("⚠️ 部分內容因安全策略被屏蔽，請嘗試更換提問方式。")
+                        except Exception as e:
+                            st.error(f"生成過程發生錯誤：{e}")
+                        
+                        ph.markdown(full)
+                        save_chat(curr_pid, "assistant", full)
         
         # 清除指令狀態，防止重整時重複觸發
         st.session_state.run_query = None
