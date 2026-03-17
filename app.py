@@ -67,17 +67,33 @@ page = st.sidebar.radio("切換工作區：", ["📈 廣告健康診斷看板 (D
 
 # 輔助函數：嘗試從資料中抓取 KPI
 def extract_kpi(df):
-    kpi = {"cost": 0, "clicks": 0, "conversions": 0}
-    cols = [c.lower() for c in df.columns]
+    kpi = {"cost": 0.0, "clicks": 0, "conversions": 0}
     
-    # 簡單的關鍵字模糊比對來抓取總和
-    for orig_col, lower_col in zip(df.columns, cols):
-        if any(x in lower_col for x in ['cost', '花費', '費用']):
-            kpi['cost'] = pd.to_numeric(df[orig_col], errors='coerce').sum()
-        if any(x in lower_col for x in ['click', '點擊']):
-            kpi['clicks'] = pd.to_numeric(df[orig_col], errors='coerce').sum()
-        if any(x in lower_col for x in ['conversion', '轉換']):
-            kpi['conversions'] = pd.to_numeric(df[orig_col], errors='coerce').sum()
+    # 建立一個清洗函數，處理帶有 $ 或 , 的字串
+    def clean_num(val):
+        if pd.isna(val): return 0.0
+        s = str(val).replace('$', '').replace(',', '').strip()
+        try:
+            return float(s)
+        except:
+            return 0.0
+
+    # 遍歷欄位名稱進行精準與模糊匹配
+    for col in df.columns:
+        c_lower = col.lower().strip()
+        
+        # 1. 匹配花費 (排除平均費用，只抓總額)
+        if any(x in c_lower for x in ['費用', 'cost']) and '平均' not in c_lower and 'avg' not in c_lower:
+            kpi['cost'] = df[col].apply(clean_num).sum()
+            
+        # 2. 匹配點擊
+        elif any(x in c_lower for x in ['點擊', 'clicks']) and '率' not in c_lower:
+            kpi['clicks'] = int(df[col].apply(clean_num).sum())
+            
+        # 3. 匹配轉換 (針對您截圖中的「轉換 (平台可比性)」)
+        elif '轉換' in c_lower and '價值' not in c_lower and '費用' not in c_lower and '率' not in c_lower:
+            kpi['conversions'] = int(df[col].apply(clean_num).sum())
+
     return kpi
 
 # ==========================================
