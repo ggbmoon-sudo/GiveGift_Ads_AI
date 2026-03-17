@@ -32,7 +32,8 @@ try:
     # 這裡請填入您「共用」給服務帳戶的試算表名稱
     # 建議先手動建立一個名為 "GGB_Ads_Memory" 的試算表並共用權限
     SHEET_NAME = "GGB_Ads_Memory" 
-    sh = gc.open(SHEET_NAME)
+    # 將下面這串網址換成您瀏覽器上方真正的 Google 表格網址
+sh = gc.open_by_url("https://docs.google.com/spreadsheets/d/1wTWkw6lL7HAslwX-WdDpqBquK9qbAyMmfaWVpmTnnGs/edit?gid=0#gid=0")
     
     # 確保工作表存在
     try:
