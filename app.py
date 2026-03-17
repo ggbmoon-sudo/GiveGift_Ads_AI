@@ -67,32 +67,37 @@ page = st.sidebar.radio("切換工作區：", ["📈 廣告健康診斷看板 (D
 
 # 輔助函數：嘗試從資料中抓取 KPI
 def extract_kpi(df):
+    # 預設值
     kpi = {"cost": 0.0, "clicks": 0, "conversions": 0}
     
-    # 建立一個清洗函數，處理帶有 $ 或 , 的字串
+    # 清洗函數：處理貨幣符號、百分比、逗號
     def clean_num(val):
         if pd.isna(val): return 0.0
-        s = str(val).replace('$', '').replace(',', '').strip()
+        # 移除常見干擾字元
+        s = str(val).replace('$', '').replace(',', '').replace('%', '').strip()
         try:
             return float(s)
         except:
             return 0.0
 
-    # 遍歷欄位名稱進行精準與模糊匹配
-    for col in df.columns:
+    # 1. 先排除報表底部的「總計」行，避免重複計算或格式干擾
+    # 通常 Google Ads 報表第一欄如果包含 "總計" 或 "Total" 字眼，該行就不要參與加總
+    df_clean = df[~df.iloc[:, 0].astype(str).str.contains('總計|Total|總和', na=False)]
+
+    for col in df_clean.columns:
         c_lower = col.lower().strip()
         
-        # 1. 匹配花費 (排除平均費用，只抓總額)
-        if any(x in c_lower for x in ['費用', 'cost']) and '平均' not in c_lower and 'avg' not in c_lower:
-            kpi['cost'] = df[col].apply(clean_num).sum()
+        # 2. 匹配【總費用】: 必須包含'費用'或'cost'，且排除'平均'、'每'、'cpc'等單位指標
+        if ('費用' in c_lower or 'cost' in c_lower) and not any(ex in c_lower for ex in ['平均', '每', 'avg', 'cpc', 'cpm', '率']):
+            kpi['cost'] = df_clean[col].apply(clean_num).sum()
             
-        # 2. 匹配點擊
-        elif any(x in c_lower for x in ['點擊', 'clicks']) and '率' not in c_lower:
-            kpi['clicks'] = int(df[col].apply(clean_num).sum())
+        # 3. 匹配【點擊數】: 排除點擊率
+        elif ('點擊' in c_lower or 'clicks' in c_lower) and '率' not in c_lower:
+            kpi['clicks'] = int(df_clean[col].apply(clean_num).sum())
             
-        # 3. 匹配轉換 (針對您截圖中的「轉換 (平台可比性)」)
-        elif '轉換' in c_lower and '價值' not in c_lower and '費用' not in c_lower and '率' not in c_lower:
-            kpi['conversions'] = int(df[col].apply(clean_num).sum())
+        # 4. 匹配【轉換數】: 排除轉換價值、轉換率、每次轉換費用
+        elif '轉換' in c_lower and not any(ex in c_lower for ex in ['價值', '率', '費用', 'value', 'rate', 'cost']):
+            kpi['conversions'] = int(df_clean[col].apply(clean_num).sum())
 
     return kpi
 
